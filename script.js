@@ -402,4 +402,15 @@ document.querySelectorAll('[data-s]').forEach(b=>b.onclick=()=>{
     setTimeout(()=>URL.revokeObjectURL(a.href),4000);
   },'image/png');
 });
+// ---- 塗りだけをクリップボードにコピー（透過PNG）----
+$('copyFill').onclick=()=>{
+  if(!W)return;
+  if(!navigator.clipboard||!window.ClipboardItem){status('このブラウザはコピーに未対応です。保存を使ってください');return}
+  // クリック操作の直後に書き込みを始める（Safari対策でBlobはPromiseで渡す）
+  const item=new ClipboardItem({'image/png':new Promise(r=>fillC.toBlob(r,'image/png'))});
+  navigator.clipboard.write([item]).then(
+    ()=>status('塗りをコピーしました'),
+    ()=>status('コピーできませんでした。保存を使ってください')
+  );
+};
 addEventListener('resize',()=>{if(W&&zoom<=0.05)fit()});
