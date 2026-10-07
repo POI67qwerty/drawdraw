@@ -1,0 +1,19 @@
+:root{--bg:#eceef2;--panel:#fff;--text:#1d2330;--sub:#6a7285;--line:#d3d7e0;--accent:#2f6bff;--danger:#e0443e;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15171c;--panel:#22252c;--text:#e9ebf0;--sub:#9aa1b2;--line:#363a45;--accent:#7597ff;--danger:#ff7a72}}
+:root[data-theme="dark"]{--bg:#15171c;--panel:#22252c;--text:#e9ebf0;--sub:#9aa1b2;--line:#363a45;--accent:#7597ff;--danger:#ff7a72}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--text);font:14px/1.4 "Hiragino Sans","Yu Gothic",system-ui,sans-serif;display:flex;flex-direction:column}
+.bar{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;padding:8px 10px;background:var(--panel);border-bottom:1px solid var(--line)}
+button,.btn,select{font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:6px 10px;cursor:pointer}
+button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+button#bErase.on{background:var(--danger);border-color:var(--danger)}
+label{display:inline-flex;align-items:center;gap:5px;color:var(--sub)}
+input[type=color]{width:34px;height:30px;padding:0;border:1px solid var(--line);border-radius:6px;background:none}
+input[type=range]{width:90px}
+#st{color:var(--sub);margin-left:auto}
+#wrap{flex:1;min-height:0;overflow:auto;padding:12px}
+#hint{color:var(--sub);text-align:center;margin-top:20vh}
+#stack{position:relative;margin:0 auto;background:#fff}
+#stack.chk{background:conic-gradient(#cfd2d8 25%,#fff 0 50%,#cfd2d8 0 75%,#fff 0) 0 0/16px 16px}
+#stack canvas{position:absolute;left:0;top:0;width:100%;height:100%}
+#ov{touch-action:none;cursor:crosshair}
