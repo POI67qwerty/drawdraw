@@ -1,0 +1,11 @@
+{
+  "name": "drawdraw",
+  "version": "1.0.0",
+  "private": true,
+  "description": "線画の隙間を閉じて囲って塗る／消す（ブラウザ用ツール）",
+  "scripts": {
+    "test": "node --test tests/fillcore.test.js",
+    "start": "python3 -m http.server 8000 --bind 0.0.0.0",
+    "e2e": "node tools/e2e.js"
+  }
+}

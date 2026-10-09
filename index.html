@@ -3,51 +3,216 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="囲って塗る">
 <title>囲って塗るツール</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div class="bar">
-  <label class="btn">線画を開く<input id="file" type="file" accept="image/*" hidden></label>
-  <button id="bFill" class="on">塗る</button>
-  <button id="bErase">消す</button>
-  <button id="bSplit">塗り分け</button>
-  <select id="mode">
-    <option value="trace">線画のエッジに沿って塗る/消す（隙間閉じ）</option>
-    <option value="lasso">線画を無視してそのまま塗る/消す</option>
-  </select>
-  <input id="color" type="color" value="#f2b8a0">
-  <label>隙間閉じ <input id="gap" type="range" min="0" max="30" value="8"><b id="gapv">8</b>px</label>
-  <label>線の外へ <input id="ext" type="range" min="0" max="6" value="0"><b id="extv">0</b>px</label>
-  <select id="smode"><option value="part">塗り分け：パーツ単位</option><option value="obj">塗り分け：オブジェクト単位（1つのまとまり＝1色）</option></select>
-  <label>まとめ具合 <input id="minA" type="range" min="0" max="30" step="0.5" value="3"><b id="minav">3</b>%</label>
-  <label>消しゴム <input id="esz" type="range" min="2" max="200" value="24"><b id="eszv">24</b>px</label>
-</div>
-<div class="bar">
-  <button id="undo">元に戻す</button><button id="redo">やり直し</button><button id="bAll">全体を自動塗り分け</button><button id="clr">全部クリア</button>
-  <button id="zo">－</button><span id="zl">100%</span><button id="zi">＋</button><button id="fit">全体</button>
-  <button id="pan">移動</button>
-  <label><input id="showL" type="checkbox" checked>線画</label>
-  <label><input id="showF" type="checkbox" checked>塗り</label>
-  <label><input id="chk" type="checkbox">市松背景</label>
-  <label><input id="conv" type="checkbox" checked>白背景を透過化</label>
-  <label><input id="useFill" type="checkbox" checked>塗り済みも隙間判定に含める</label>
-  <span id="st"></span>
-</div>
-<div class="bar">
-  <span style="color:var(--sub)">保存(PNG)</span>
-  <button data-s="0,0,_fill_alpha">塗りのみ（透過）</button>
-  <button data-s="0,1,_fill_white">塗りのみ（白背景）</button>
-  <button data-s="1,0,_art_alpha">線画あり（透過）</button>
-  <button data-s="1,1,_art_white">線画あり（白背景）</button>
-  <button id="copyFill">塗りをコピー（透過）</button>
-</div>
-<div id="wrap">
-  <p id="hint">「線画を開く」で線画の画像を読み込んでください。塗りたい所を指やペンでぐるっと囲うと塗れます。</p>
-  <div id="stack" hidden>
-    <canvas id="fill"></canvas><canvas id="line"></canvas><canvas id="ov"></canvas>
+
+<header class="top">
+  <div class="brand">囲って塗る</div>
+  <label class="btn primary" for="file" title="画像を開く（⌘V で貼り付け・ドラッグ＆ドロップでも可）">画像を開く</label>
+  <input id="file" type="file" accept="image/*" hidden>
+  <span id="fname" class="fname"></span>
+
+  <span class="sep"></span>
+  <button id="undo" class="btn icon" title="元に戻す（⌘Z / Ctrl+Z）" aria-label="元に戻す" disabled>↶</button>
+  <button id="redo" class="btn icon" title="やり直し（⇧⌘Z / Ctrl+Shift+Z）" aria-label="やり直し" disabled>↷</button>
+
+  <span class="sep"></span>
+  <label class="brush-top" title="ブラシサイズ（[ と ] でも変更できます）">サイズ
+    <input id="brush" type="range" min="1" max="300" value="40" data-persist>
+    <output data-for="brush"></output>
+  </label>
+  <button id="clrTop" class="btn danger" title="塗りをすべて消します（元に戻せます）">全消去</button>
+
+  <span class="sep"></span>
+  <button id="zo" class="btn icon" title="縮小（−）" aria-label="縮小">−</button>
+  <button id="zl" class="btn zoomlbl" title="100% に戻す（1）">100%</button>
+  <button id="zi" class="btn icon" title="拡大（＋）" aria-label="拡大">＋</button>
+  <button id="fit" class="btn" title="全体表示（0）">全体</button>
+
+  <span class="sep"></span>
+  <label class="chk"><input id="showL" type="checkbox" checked>線画</label>
+  <label class="chk"><input id="showF" type="checkbox" checked>塗り</label>
+  <label class="chk"><input id="chk" type="checkbox">市松背景</label>
+
+  <span class="grow"></span>
+  <button id="togglePanel" class="btn" aria-expanded="true" aria-controls="panel">設定</button>
+  <details id="menu" class="menu">
+    <summary class="btn">保存・その他</summary>
+    <div class="menu-body">
+      <p class="menu-title">PNGで保存</p>
+      <button class="menu-item" data-s="0,0,_fill_alpha">塗りのみ（透過）</button>
+      <button class="menu-item" data-s="0,1,_fill_white">塗りのみ（白背景）</button>
+      <button class="menu-item" data-s="1,0,_art_alpha">線画あり（透過）</button>
+      <button class="menu-item" data-s="1,1,_art_white">線画あり（白背景）</button>
+      <button class="menu-item" id="copyFill">塗りをコピー（透過）</button>
+      <hr>
+      <button class="menu-item danger" id="clr">塗りを全部消す（元に戻せます）</button>
+    </div>
+  </details>
+</header>
+
+<div class="main">
+  <nav class="rail" aria-label="ツール">
+    <fieldset class="rg">
+      <legend>動作</legend>
+      <label class="tool">
+        <input type="radio" name="action" value="fill" checked>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4-1 10-10-3-3L5 16l-1 4z"/><path d="M14 6l3 3"/><path d="M3 21h6" class="thin"/></svg>
+        <span>塗る</span><kbd>F</kbd>
+      </label>
+      <label class="tool">
+        <input type="radio" name="action" value="erase">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17l-3-3 9-9 5 5-7 7H7z"/><path d="M12 19h8"/></svg>
+        <span>消す</span><kbd>E</kbd>
+      </label>
+      <label class="tool">
+        <input type="radio" name="action" value="split">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg>
+        <span>塗り分け</span><kbd>S</kbd>
+      </label>
+    </fieldset>
+
+    <fieldset class="rg">
+      <legend>形</legend>
+      <label class="tool">
+        <input type="radio" name="shape" value="brush" checked>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 16c3-4 5 4 8 0s5 4 10 0" /><path d="M3 20c3-4 5 4 8 0s5 4 10 0" class="thin"/></svg>
+        <span>ブラシ</span><kbd>B</kbd>
+      </label>
+      <label class="tool">
+        <input type="radio" name="shape" value="lasso">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4c5 0 8 2.5 8 6s-3.5 6-8 6-7-2.5-7-5 3-3 6-3 3 1 2 4-3 3-6 2"/><path d="M12 16l1 4" class="thin"/></svg>
+        <span>投げ縄</span><kbd>L</kbd>
+      </label>
+    </fieldset>
+
+    <button id="pan" class="tool toggle" aria-pressed="false" title="移動（Space を押している間も移動）">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11V5.5a1.5 1.5 0 0 1 3 0V10m0-1.5a1.5 1.5 0 0 1 3 0V10m0-.5a1.5 1.5 0 0 1 3 0v4.5c0 3.5-2.5 6-6 6-2.5 0-4-1.2-5.5-3.5L4.5 13a1.5 1.5 0 0 1 2.3-1.9L9 13"/></svg>
+      <span>移動</span><kbd>H</kbd>
+    </button>
+  </nav>
+
+  <div id="wrap">
+    <div id="empty">
+      <div class="drop">
+        <p class="drop-title">線画を開いてください</p>
+        <label class="btn primary big" for="file">画像を選ぶ</label>
+        <p class="drop-sub">ここに画像をドラッグ＆ドロップ、または ⌘V（Ctrl+V）で貼り付け</p>
+        <p class="drop-sub">iPad では「写真」から選べます</p>
+      </div>
+    </div>
+    <div id="stack" hidden>
+      <canvas id="fill"></canvas><canvas id="line"></canvas><canvas id="ov"></canvas>
+    </div>
   </div>
+
+  <aside id="panel" class="panel" aria-label="設定">
+    <section class="sec">
+      <h2>線の認識</h2>
+      <div class="row">
+        <label class="lbl" for="thr">線とみなす濃さ <output data-for="thr"></output></label>
+        <input id="thr" type="range" min="1" max="255" value="50" data-persist>
+        <p class="hint">薄い線が拾えないときは小さく、塗りが線を越えるときは大きくします。</p>
+      </div>
+      <div class="row">
+        <label class="chk"><input id="conv" type="checkbox" checked data-persist>白背景の画像を透過化（明るさを線の濃さにする）</label>
+        <p class="hint">白い紙の上の線画を開いたときに使います。読み込み時に反映されます。</p>
+      </div>
+    </section>
+
+    <section class="sec">
+      <h2>塗り方</h2>
+      <div class="row" id="row-trace">
+        <div class="seg" role="radiogroup" aria-label="塗り方">
+          <label><input type="radio" name="trace" value="trace" checked><span>線に沿う</span></label>
+          <label><input type="radio" name="trace" value="raw"><span>線を無視</span></label>
+        </div>
+        <p class="hint">「線に沿う」は線で区切られた領域を塗ります。「線を無視」はなぞった所をそのまま塗ります。</p>
+      </div>
+      <div class="row" id="row-range">
+        <div class="seg" role="radiogroup" aria-label="囲みの範囲">
+          <label><input type="radio" name="range" value="clip" checked><span>囲みの中だけ</span></label>
+          <label><input type="radio" name="range" value="whole"><span>領域全体</span></label>
+        </div>
+        <p class="hint">「領域全体」は、囲みに触れた線の区切りの中をすべて塗ります。</p>
+      </div>
+      <div class="row" id="row-gap">
+        <label class="lbl" for="gap">隙間閉じ <output data-for="gap"></output> px</label>
+        <input id="gap" type="range" min="0" max="30" value="8" data-persist>
+        <p class="hint">線の隙間が、この値の2倍までの幅なら閉じます。細い所が塗れないときは小さくします。</p>
+      </div>
+      <div class="row" id="row-bleed">
+        <label class="lbl" for="bleed">線の下へはみ出し <output data-for="bleed"></output> px</label>
+        <input id="bleed" type="range" min="0" max="6" value="0" data-persist>
+        <p class="hint">初期値 0。増やすと、塗りと消しが線のアンチエイリアスの下までその分だけ届きます（塗：縁の白い隙間を完全に無くす／消：線の縁の取り残しを掃除する）。</p>
+      </div>
+      <div class="row" id="row-protect">
+        <label class="chk"><input id="protect" type="checkbox" checked data-persist>既存の塗りを上書きしない</label>
+      </div>
+    </section>
+
+    <section class="sec" id="row-color">
+      <h2>色</h2>
+      <div class="swatches" role="group" aria-label="色の候補">
+        <button class="sw" style="background:#f2b8a0" data-color="#f2b8a0" aria-label="肌色"></button>
+        <button class="sw" style="background:#f7d7a3" data-color="#f7d7a3" aria-label="薄い黄"></button>
+        <button class="sw" style="background:#f4e28c" data-color="#f4e28c" aria-label="黄"></button>
+        <button class="sw" style="background:#a8dca0" data-color="#a8dca0" aria-label="緑"></button>
+        <button class="sw" style="background:#a6d8f2" data-color="#a6d8f2" aria-label="水色"></button>
+        <button class="sw" style="background:#9fb1f5" data-color="#9fb1f5" aria-label="青"></button>
+        <button class="sw" style="background:#cfa6ef" data-color="#cfa6ef" aria-label="紫"></button>
+        <button class="sw" style="background:#f5a3c2" data-color="#f5a3c2" aria-label="ピンク"></button>
+        <button class="sw" style="background:#ffffff" data-color="#ffffff" aria-label="白"></button>
+        <button class="sw" style="background:#9aa1b2" data-color="#9aa1b2" aria-label="グレー"></button>
+      </div>
+      <label class="lbl color-custom">その他の色 <input id="color" type="color" value="#f2b8a0" data-persist></label>
+    </section>
+
+
+    <section class="sec" id="sec-split">
+      <h2>塗り分け</h2>
+      <div class="row">
+        <div class="seg" role="radiogroup" aria-label="塗り分けの単位">
+          <label><input type="radio" name="smode" value="parts" checked><span>パーツ単位</span></label>
+          <label><input type="radio" name="smode" value="obj"><span>オブジェクト単位</span></label>
+        </div>
+        <p class="hint">パーツ単位は小さな領域を隣へまとめ、オブジェクト単位は接している領域を1色にします。</p>
+      </div>
+      <div class="row" id="row-pct">
+        <label class="lbl" for="pct">まとめ具合 <output data-for="pct"></output> %</label>
+        <input id="pct" type="range" min="0" max="30" step="0.5" value="3" data-persist>
+      </div>
+      <div class="row">
+        <button id="bAll" class="btn wide">画像全体を自動で塗り分け</button>
+      </div>
+    </section>
+
+    <section class="sec help">
+      <h2>操作</h2>
+      <ul>
+        <li><b>塗る</b>：ブラシで領域を覆うように なぞる／投げ縄で囲む → 離すと線の縁まで隙間なく塗れます</li>
+        <li><b>消す</b>：なぞった所の中で線に突き当たるまで消えます（エッジに沿って消去）。「線の下へはみ出し」を増やすと線の縁の下も掃除します</li>
+        <li><b>移動</b>：Space を押しながらドラッグ、または「移動」</li>
+        <li><b>拡大・縮小</b>：ピンチ、トラックパッドのピンチ、⌘/Ctrl＋スクロール</li>
+        <li><b>元に戻す</b>：⌘Z / Ctrl+Z、やり直し：⇧⌘Z。iPad では<b>2本指タップ</b>で元に戻す、<b>3本指タップ</b>でやり直し</li>
+        <li><b>ショートカット</b>：B＝塗るブラシ、E＝消すブラシ、L＝塗る投げ縄、Shift+L＝消す投げ縄、[ ]＝サイズ、Esc＝取り消し</li>
+      </ul>
+    </section>
+  </aside>
 </div>
+
+<footer class="foot">
+  <span id="st" class="st"></span>
+  <span id="hint" class="hint-bar"></span>
+  <span id="size" class="size"></span>
+</footer>
+
+<script src="fillcore.js"></script>
 <script src="script.js"></script>
 </body>
 </html>
