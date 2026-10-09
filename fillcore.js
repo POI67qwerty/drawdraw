@@ -144,6 +144,16 @@
     const { w, h, B0, FB, allow } = o;
     const n = w * h;
     const { lab } = labelRegions({ ...o, depth: (o.gap | 0) + 1 });
+    if (o.openEdge) {
+      // 画像の端まで届く領域は、端に隙間があるので閉じていない（CSP と同じく塗らない）
+      let maxL = 0;
+      for (let i = 0; i < n; i++) if (lab[i] > maxL) maxL = lab[i];
+      const bad = new Uint8Array(maxL + 1);
+      for (let x = 0; x < w; x++) { bad[lab[x]] = 1; bad[lab[(h - 1) * w + x]] = 1; }
+      for (let y = 0; y < h; y++) { bad[lab[y * w]] = 1; bad[lab[y * w + w - 1]] = 1; }
+      bad[0] = 0;
+      for (let i = 0; i < n; i++) if (bad[lab[i]]) lab[i] = 0;
+    }
     const b = o.bleed | 0;
     if (b > 0) {
       const enter = new Uint8Array(n);
