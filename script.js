@@ -236,6 +236,73 @@
       total -= undoStack[0].img.data.length;
       undoStack.shift();
     }
+	    updateHistoryButtons();
+  }
+  function swap(from, to) {
+    const s = from.pop();
+    if (!s) return;
+    const cur = { x: s.x, y: s.y, img: fctx.getImageData(s.x, s.y, s.img.width, s.img.height) };
+    fctx.putImageData(s.img, s.x, s.y);
+    to.push(cur);
+    updateHistoryButtons();
+    drawOverlay();
+  }
+  const undo = () => { if (!busy && W) swap(undoStack, redoStack); };
+  const redo = () => { if (!busy && W) swap(redoStack, undoStack); };
+  function updateHistoryButtons() {
+    $('undo').disabled = !undoStack.length;
+    $('redo').disabled = !redoStack.length;
+  }
+
+  // ---------- 反映 ----------
+  // マスク M（矩形 bx,by,bw,bh）を塗る、または消す
+  function applyMask(bx, by, bw, bh, M, erase) {
+    let cnt = 0;
+    for (let i = 0; i < M.length; i++) cnt += M[i];
+    if (!cnt) return 0;
+    snap(bx, by, bw, bh);
+    const img = fctx.getImageData(bx, by, bw, bh), d = img.data;
+    if (erase) {
+      for (let i = 0; i < M.length; i++) if (M[i]) d[i * 4 + 3] = 0;
+    } else {
+      const [r, g, b] = hexRGB($('color').value);
+      for (let i = 0; i < M.length; i++) {
+        if (!M[i]) continue;
+        d[i * 4] = r; d[i * 4 + 1] = g; d[i * 4 + 2] = b; d[i * 4 + 3] = 255;
+      }    updateHistoryButtons();
+  }
+  function swap(from, to) {
+    const s = from.pop();
+    if (!s) return;
+    const cur = { x: s.x, y: s.y, img: fctx.getImageData(s.x, s.y, s.img.width, s.img.height) };
+    fctx.putImageData(s.img, s.x, s.y);
+    to.push(cur);
+    updateHistoryButtons();
+    drawOverlay();
+  }
+  const undo = () => { if (!busy && W) swap(undoStack, redoStack); };
+  const redo = () => { if (!busy && W) swap(redoStack, undoStack); };
+  function updateHistoryButtons() {
+    $('undo').disabled = !undoStack.length;
+    $('redo').disabled = !redoStack.length;
+  }
+
+  // ---------- 反映 ----------
+  // マスク M（矩形 bx,by,bw,bh）を塗る、または消す
+  function applyMask(bx, by, bw, bh, M, erase) {
+    let cnt = 0;
+    for (let i = 0; i < M.length; i++) cnt += M[i];
+    if (!cnt) return 0;
+    snap(bx, by, bw, bh);
+    const img = fctx.getImageData(bx, by, bw, bh), d = img.data;
+    if (erase) {
+      for (let i = 0; i < M.length; i++) if (M[i]) d[i * 4 + 3] = 0;
+    } else {
+      const [r, g, b] = hexRGB($('color').value);
+      for (let i = 0; i < M.length; i++) {
+        if (!M[i]) continue;
+        d[i * 4] = r; d[i * 4 + 1] = g; d[i * 4 + 2] = b; d[i * 4 + 3] = 255;
+      }
     updateHistoryButtons();
   }
   function swap(from, to) {
@@ -305,7 +372,7 @@
       });
       return paintGroups(0, 0, W, H, grp, G);
     }
-    const M = FC.fillRegion({ w: W, h: H, B0, FB, seed: S, allow: null, gap, bleed: num('bleed') });
+    const M = FC.fillRegion({ w: W, h: H, B0, FB, seed: S, allow: null, gap, bleed: num('bleed'), openEdge: true });
     const bb = boundsOf(M, W, H);
     if (!bb) return '塗れる領域がありませんでした';
     return doneMsg(applyMask(bb.x, bb.y, bb.w, bb.h, crop(M, bb.x, bb.y, bb.w, bb.h), act === 'erase'), act);
@@ -357,7 +424,7 @@
       return paintGroups(R.bx, R.by, R.bw, R.bh, grp, G);
     }
     const M = FC.fillRegion({
-      w: R.bw, h: R.bh, B0, FB, seed: R.L, allow: whole ? null : R.L, gap, bleed: num('bleed'),
+      w: R.bw, h: R.bh, B0, FB, seed: R.L, allow: whole ? null : R.L, gap, bleed: num('bleed'), openEdge: whole,
     });
     return doneMsg(applyMask(R.bx, R.by, R.bw, R.bh, M, erase), act);
   }
