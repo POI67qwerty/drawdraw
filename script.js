@@ -567,7 +567,8 @@
     if (white) { x.fillStyle = '#fff'; x.fillRect(0, 0, W, H); }
     x.drawImage(fillC, 0, 0);
     if (withLine) x.drawImage(lineC, 0, 0);
-    c.toBlob(bl => download(bl, baseName + suffix + '.png'), 'image/png');
+    const name = baseName + suffix + '.png';
+    c.toBlob(bl => { download(bl, name); status(`${name} を保存しました`); }, 'image/png');
   }
   document.querySelectorAll('[data-s]').forEach(b => b.addEventListener('click', () => {
     const [withLine, white, suffix] = b.dataset.s.split(',');
