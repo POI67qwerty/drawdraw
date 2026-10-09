@@ -1,5 +1,3 @@
-<!DOCTYPE html>
-<html lang="ja">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -10,7 +8,6 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-
 <header class="top">
   <div class="brand">囲って塗る</div>
   <label class="btn primary" for="file" title="画像を開く（⌘V で貼り付け・ドラッグ＆ドロップでも可）">画像を開く</label>
@@ -129,10 +126,10 @@
       </div>
       <div class="row" id="row-range">
         <div class="seg" role="radiogroup" aria-label="囲みの範囲">
-          <label><input type="radio" name="range" value="clip" checked><span>囲みの中だけ</span></label>
-          <label><input type="radio" name="range" value="whole"><span>領域全体</span></label>
+          <label><input type="radio" name="range" value="whole" checked><span>触れた領域全体</span></label>
+          <label><input type="radio" name="range" value="clip"><span>囲みの中だけ</span></label>
         </div>
-        <p class="hint">「領域全体」は、囲みに触れた線の区切りの中をすべて塗ります。</p>
+        <p class="hint">「触れた領域全体」は、囲みに触れた線の区切りの中をすべて塗ります（CSP と同じ）。画像の端まで続く白い紙は閉じていないので塗りません。「囲みの中だけ」は囲みの線で切って塗ります。</p>
       </div>
       <div class="row" id="row-gap">
         <label class="lbl" for="gap">隙間閉じ <output data-for="gap"></output> px</label>
