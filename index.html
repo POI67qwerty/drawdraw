@@ -89,6 +89,11 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4c5 0 8 2.5 8 6s-3.5 6-8 6-7-2.5-7-5 3-3 6-3 3 1 2 4-3 3-6 2"/><path d="M12 16l1 4" class="thin"/></svg>
         <span>投げ縄</span><kbd>L</kbd>
       </label>
+      <label class="tool">
+        <input type="radio" name="shape" value="pen">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19l1.5-5.5L16 4l4 4-9.5 9.5L5 19z"/><path d="M14 6l4 4" class="thin"/></svg>
+        <span>ペン</span><kbd>P</kbd>
+      </label>
     </fieldset>
 
     <button id="pan" class="tool toggle" aria-pressed="false" title="移動（Space を押している間も移動）">
@@ -107,7 +112,7 @@
       </div>
     </div>
     <div id="stack" hidden>
-      <canvas id="fill"></canvas><canvas id="line"></canvas><canvas id="ov"></canvas>
+      <canvas id="fill"></canvas><canvas id="line"></canvas><canvas id="pen"></canvas><canvas id="ov"></canvas>
     </div>
   </div>
 
@@ -200,7 +205,7 @@
         <li><b>移動</b>：Space を押しながらドラッグ、または「移動」</li>
         <li><b>拡大・縮小</b>：ピンチ、トラックパッドのピンチ、⌘/Ctrl＋スクロール</li>
         <li><b>元に戻す</b>：⌘Z / Ctrl+Z、やり直し：⇧⌘Z。iPad では<b>2本指タップ</b>で元に戻す、<b>3本指タップ</b>でやり直し</li>
-        <li><b>ショートカット</b>：B＝塗るブラシ、E＝消すブラシ、L＝塗る投げ縄、Shift+L＝消す投げ縄、[ ]＝サイズ、Esc＝取り消し</li>
+        <li><b>ショートカット</b>：B＝塗るブラシ、E＝消すブラシ、L＝塗る投げ縄、Shift+L＝消す投げ縄、P＝ペン（穴埋めの線）、[ ]＝サイズ、Esc＝取り消し</li>
       </ul>
     </section>
   </aside>

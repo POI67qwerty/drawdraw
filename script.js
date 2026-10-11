@@ -38,9 +38,10 @@
   const HISTORY_BYTES = 200e6, HISTORY_STEPS = 50;
   const ACOL = { fill: '#2f6bff', erase: '#e0443e', split: '#1aa36b' };
 
-  const fillC = $('fill'), lineC = $('line'), ovC = $('ov'), stack = $('stack'), wrap = $('wrap');
+  const fillC = $('fill'), lineC = $('line'), penC = $('pen'), ovC = $('ov'), stack = $('stack'), wrap = $('wrap');
   const fctx = fillC.getContext('2d', { willReadFrequently: true });
   const lctx = lineC.getContext('2d', { willReadFrequently: true });
+  const pctx = penC.getContext('2d', { willReadFrequently: true });   // ペン（穴埋めの線）用レイヤー
   const octx = ovC.getContext('2d');
   const srcC = document.createElement('canvas');
   const sctx = srcC.getContext('2d', { willReadFrequently: true });
@@ -153,7 +154,7 @@
     srcC.width = W; srcC.height = H;
     sctx.clearRect(0, 0, W, H);
     sctx.drawImage(img, 0, 0, W, H);
-    [fillC, lineC, ovC].forEach(c => { c.width = W; c.height = H; });
+    [fillC, lineC, penC, ovC].forEach(c => { c.width = W; c.height = H; });
     undoStack = []; redoStack = [];
     barrier = null;
     const opaque = buildLine();
@@ -173,6 +174,7 @@
   function buildLine() {
     lctx.clearRect(0, 0, W, H);
     lctx.drawImage(srcC, 0, 0);
+    lctx.drawImage(penC, 0, 0);   // ペンで描いた穴埋めの線も、線画と同じ「壁」として扱う
     const d = lctx.getImageData(0, 0, W, H), p = d.data, n = W * H;
     let opaque = true;
     for (let i = 3; i < p.length; i += 4) if (p[i] < 255) { opaque = false; break; }
@@ -186,7 +188,7 @@
     }
     lineAlpha = new Uint8Array(n);
     for (let i = 0; i < n; i++) lineAlpha[i] = p[i * 4 + 3];
-    barrier = null;
+    barrier = null; barrierThr = -1; barrierE = null; barrierEThr = -1;   // 壁のキャッシュを捨てて作り直し
     return opaque;
   }
 
@@ -245,7 +247,7 @@
         octx.lineWidth = brushSize();
         octx.stroke();
       }
-    } else if (hoverPt && shape === 'brush') {
+    } else if (hoverPt && (shape === 'brush' || shape === 'pen')) {
       octx.strokeStyle = col;
       octx.lineWidth = 1.5 / z;
       octx.beginPath();
@@ -259,13 +261,15 @@
   }
 
   // ---------- 履歴（元に戻す／やり直し）----------
+  const histBytes = s => s.img.data.length + (s.pimg ? s.pimg.data.length : 0);
   function snap(x, y, w, h) {
-    undoStack.push({ x, y, img: fctx.getImageData(x, y, w, h) });
+    // 変更前の「塗り」と「ペン線」の切り抜きをセットで保存する
+    undoStack.push({ x, y, img: fctx.getImageData(x, y, w, h), pimg: pctx.getImageData(x, y, w, h) });
     redoStack = [];
     let total = 0;
-    for (const s of undoStack) total += s.img.data.length;
+    for (const s of undoStack) total += histBytes(s);
     while (undoStack.length > 1 && (total > HISTORY_BYTES || undoStack.length > HISTORY_STEPS)) {
-      total -= undoStack[0].img.data.length;
+      total -= histBytes(undoStack[0]);
       undoStack.shift();
     }
     updateHistoryButtons();
@@ -273,8 +277,10 @@
   function swap(from, to) {
     const s = from.pop();
     if (!s) return;
-    const cur = { x: s.x, y: s.y, img: fctx.getImageData(s.x, s.y, s.img.width, s.img.height) };
+    const w = s.img.width, h = s.img.height;
+    const cur = { x: s.x, y: s.y, img: fctx.getImageData(s.x, s.y, w, h), pimg: pctx.getImageData(s.x, s.y, w, h) };
     fctx.putImageData(s.img, s.x, s.y);
+    if (s.pimg) { pctx.putImageData(s.pimg, s.x, s.y); buildLine(); }   // ペン線が戻った/消えたので壁を作り直す
     to.push(cur);
     updateHistoryButtons();
     drawOverlay();
@@ -358,11 +364,15 @@
   // 計算を Worker に投げる（配列はコピーせず渡す）。失敗したら自スレッドで計算
   function calc(o, transfer) {
     if (!worker) return Promise.resolve(null);
+    // 同じ ArrayBuffer を二重に転送するとエラーになるので、重複を取り除く
+    // （例：投げ縄の「塗る」は seed と allow に同じ配列を渡す）
+    const seen = new Set(), tr = [];
+    for (const b of transfer || []) if (b && !seen.has(b)) { seen.add(b); tr.push(b); }
     const id = ++wid;
     return new Promise((res, rej) => {
       wpend.set(id, { res, rej });
       o.id = id;
-      try { worker.postMessage(o, transfer || []); }
+      try { worker.postMessage(o, tr); }
       catch (err) { wpend.delete(id); rej(err); }
     });
   }
@@ -538,6 +548,30 @@
   }
 
   // 計算は少し遅らせて、囲みの線を先に消す（画面がもたつかないように）
+  // ペン（穴埋めの線）：専用のペンレイヤーに線を描く。
+  // 描いた線は線画と同じ「越えられない壁」になるので、すき間を塞いでから塗る／消すに使えます。
+  // 動作＝消す のときは、なぞった所のペン線を消します。PNG 保存には含まれません（作業用の線）。
+  function jobPen(P, size) {
+    const erasePen = action === 'erase';
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const [x, y] of P) { if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y; }
+    const r = size / 2 + 2;   // 線の太さの半分＋マージン＝変更される範囲
+    const bx = clamp(Math.floor(x0 - r), 0, W - 1), by = clamp(Math.floor(y0 - r), 0, H - 1);
+    const bw = clamp(Math.ceil(x1 + r), 1, W) - bx, bh = clamp(Math.ceil(y1 + r), 1, H) - by;
+    const c = strokeCanvas(P, size, bx, by, bw, bh, erasePen ? '#000' : $('color').value);
+    snap(bx, by, bw, bh);     // 変更前を履歴に保存（塗りレイヤーも一緒に）
+    if (erasePen) {
+      pctx.save();
+      pctx.globalCompositeOperation = 'destination-out';   // なぞった所を消す
+      pctx.drawImage(c, bx, by);
+      pctx.restore();
+    } else {
+      pctx.drawImage(c, bx, by);
+    }
+    buildLine();   // 壁（線の濃さ）を作り直す → 次の塗り/消しからペン線が効く
+    return erasePen ? '穴埋めの線を消しました' : '穴埋めの線を描きました（塗る/消すの壁になります）';
+  }
+
   function runJob(label, fn) {
     if (busy) return;
     busy = true;
@@ -561,14 +595,15 @@
   // 指/ペンを離した瞬間：なぞりを確定して計算ジョブを実行する
   function finishStroke(s) {
     const P = s.pts.slice();
-    if (s.kind === 'brush') {
-      if (P.length === 1) P.push([P[0][0] + 0.01, P[0][1]]);   // 1 回のタップも点として塗る
+    if (s.kind !== 'lasso') {
+      if (P.length === 1) P.push([P[0][0] + 0.01, P[0][1]]);   // 1 回のタップも点として描く/塗る
     } else if (P.length < 3) {
       status('もう少し大きく囲んでください');
       return;
     }
     const size = brushSize();
-    runJob(s.kind === 'lasso' ? '囲んだ範囲を処理中…' : '処理中…', () => (s.kind === 'lasso' ? jobLasso(P) : jobBrush(P, size)));
+    runJob(s.kind === 'lasso' ? '囲んだ範囲を処理中…' : '処理中…', () =>
+      (s.kind === 'lasso' ? jobLasso(P) : s.kind === 'pen' ? jobPen(P, size) : jobBrush(P, size)));
   }
 
   // ---------- ポインター（マウス・タッチ・ペン）----------
@@ -608,7 +643,7 @@
       return;
     }
     const p = toImg(e);
-    stroke = { id: e.pointerId, kind: shape === 'lasso' ? 'lasso' : 'brush', pts: [p] };
+    stroke = { id: e.pointerId, kind: shape, pts: [p] };   // kind = 'brush' / 'lasso' / 'pen'
     hoverPt = p;
     drawOverlay();
   }
@@ -752,27 +787,31 @@
   function refreshPanel() {
     action = radio('action');
     shape = radio('shape');
-    const isSplit = action === 'split', isLasso = shape === 'lasso', tr = traceOn();
+    const isSplit = action === 'split', isLasso = shape === 'lasso', isPen = shape === 'pen', tr = traceOn();
     const show = (id, on) => { const el = $(id); if (el) el.hidden = !on; };
-    show('row-trace', !isSplit);
+    show('row-trace', !isSplit && !isPen);
     show('row-range', isLasso && !isSplit && tr);
-    show('row-gap', isSplit || tr);
-    show('row-bleed', !isSplit && tr);
-    show('row-protect', action !== 'erase' && (isSplit || tr));
-    show('row-color', action === 'fill');
-    show('sec-brush', shape === 'brush');
-    show('sec-split', isSplit);
+    show('row-gap', (isSplit || tr) && !isPen);
+    show('row-bleed', !isSplit && tr && !isPen);
+    show('row-protect', action !== 'erase' && (isSplit || tr) && !isPen);
+    show('row-color', action === 'fill' || (isPen && action !== 'erase'));
+    show('sec-brush', shape === 'brush' || isPen);   // ペンの太さもブラシサイズのスライダーを使う
+    show('sec-split', isSplit && !isPen);
     show('row-pct', isSplit && radio('smode') === 'parts');
     document.querySelectorAll('.tool').forEach(t => t.classList.toggle('on', !!t.querySelector('input:checked')));
     stack.dataset.tool = shape;
     const names = { fill: '塗る', erase: '消す', split: '塗り分け' };
-    const how = { brush: 'ブラシでなぞる', lasso: '投げ縄で囲む' };
+    const how = { brush: 'ブラシでなぞる', lasso: '投げ縄で囲む', pen: 'ペンで線を描く' };
     const help = {
       fill: { brush: '覆うように なぞると、離したときに線の縁まで隙間なく塗れます', lasso: '囲むと、囲みの中の領域を線の縁まで隙間なく塗れます' },
       erase: { brush: 'なぞりの中心からブラシ半径の範囲で、線に突き当たるまで消えます（線を越えない）', lasso: '囲みの中で、線に突き当たるまで消えます（エッジに沿って消去）' },
       split: { brush: 'なぞった領域を、線で区切られたパーツごとに別の色で塗り分けます', lasso: '囲みの中を、線で区切られたパーツごとに別の色で塗り分けます' },
     };
-    $('hint').textContent = `${names[action]}：${how[shape]}。` + (!tr && !isSplit ? '（線を無視：なぞった所をそのまま）' : help[action][shape]);
+    $('hint').textContent = isPen
+      ? (action === 'erase'
+        ? 'ペン（消す）：なぞった所の穴埋めの線を消します'
+        : 'ペン：なぞった所に穴埋めの線を描きます。線画と同じ壁になるので、すき間を塞いでから塗れます（PNG 保存には含まれません）')
+      : `${names[action]}：${how[shape]}。` + (!tr && !isSplit ? '（線を無視：なぞった所をそのまま）' : help[action][shape]);
     $('hint').title = $('hint').textContent;
     drawOverlay();
   }
@@ -899,7 +938,9 @@
     if (!W) { status('先に画像を開いてください'); return; }
     snap(0, 0, W, H);
     fctx.clearRect(0, 0, W, H);
-    status('塗りを全部消しました（元に戻せます）');
+    pctx.clearRect(0, 0, W, H);
+    buildLine();   // ペン線が消えたので壁を作り直す
+    status('塗りとペン線を全部消しました（元に戻せます）');
   }
   $('clr').addEventListener('click', () => {
     closeMenu();
@@ -939,6 +980,7 @@
         if (e.shiftKey) { setRadio('action', 'erase'); setRadio('shape', 'lasso'); }
         else { setRadio('action', 'fill'); setRadio('shape', 'lasso'); }
         break;
+      case 'p': setRadio('shape', 'pen'); break;   // ペン（穴埋めの線）
       case 'h': togglePan(); break;
       case '[': nudgeBrush(-1); break;
       case ']': nudgeBrush(1); break;

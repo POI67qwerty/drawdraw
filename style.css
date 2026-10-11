@@ -213,6 +213,7 @@ kbd {
 #stack.px canvas { image-rendering: pixelated; }
 #ov { touch-action: none; -webkit-touch-callout: none; cursor: crosshair; }
 #stack[data-tool="brush"] #ov { cursor: none; }
+#stack[data-tool="pen"] #ov { cursor: none; }
 
 .panel {
   flex: none;

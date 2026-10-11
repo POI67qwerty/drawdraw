@@ -14,7 +14,9 @@ class Ctx {
     this._path = []; this._cur = null;
   }
   B() { return this.c._buf; }
-  setTransform() {} save() {} restore() {} setLineDash() {}
+  setTransform() {} setLineDash() {}
+  save() { (this._st ||= []).push({ op: this.globalCompositeOperation, ga: this.globalAlpha }); }
+  restore() { const s = (this._st || []).pop(); if (s) { this.globalCompositeOperation = s.op; this.globalAlpha = s.ga; } }
   clearRect(x, y, w, h) {
     const B = this.B(), W = this.c.width;
     for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
@@ -64,10 +66,22 @@ class Ctx {
     for (let j = 0; j < img.height; j++) B.set(img.data.subarray(j * img.width * 4, (j + 1) * img.width * 4), ((y + j) * W + x) * 4);
   }
   drawImage(src, dx, dy) {
+    // 本物の canvas 同様、アルファ合成（source-over / destination-out）で重ねる
     const W = this.c.width, B = this.B();
     const SB = src._buf || src._pixels;
-    const SW = src.width;
-    for (let j = 0; j < src.height; j++) B.set(SB.subarray(j * SW * 4, (j + 1) * SW * 4), ((dy + j) * W + dx) * 4);
+    const SW = src.width, op = this.globalCompositeOperation;
+    for (let j = 0; j < src.height; j++) {
+      for (let i = 0; i < SW; i++) {
+        const so = (j * SW + i) * 4, a = SB[so + 3];
+        if (!a) continue;
+        const o = ((dy + j) * W + dx + i) * 4, da = B[o + 3];
+        if (op === 'destination-out') { B[o + 3] = da * (255 - a) / 255 | 0; continue; }
+        if (a === 255) { B[o] = SB[so]; B[o + 1] = SB[so + 1]; B[o + 2] = SB[so + 2]; B[o + 3] = 255; continue; }
+        const oa = a + da * (255 - a) / 255;
+        for (let c = 0; c < 3; c++) B[o + c] = oa ? (SB[so + c] * a + B[o + c] * da * (255 - a) / 255) / oa | 0 : 0;
+        B[o + 3] = Math.min(255, Math.round(oa));
+      }
+    }
   }
 }
 class Canvas {
@@ -105,7 +119,7 @@ class El {
 }
 function makeDom(ids, radioDef, initState) {
   const els = {};
-  for (const id of ids) els[id] = id === 'fill' || id === 'line' || id === 'ov' ? new Canvas(id) : new El(id);
+  for (const id of ids) els[id] = ['fill', 'line', 'pen', 'ov'].includes(id) ? new Canvas(id) : new El(id);
   els.wrap = Object.assign(els.wrap, { clientWidth: 900, clientHeight: 700 });
   // 既定値
   Object.assign(els.thr, { value: '50', type: 'range' });

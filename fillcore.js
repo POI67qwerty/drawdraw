@@ -148,6 +148,12 @@
     b.fill(0, 0, n);
     return b;
   }
+  // 0 クリアしない版：「使う前に全部書く」配列とキュー専用（memset を節約）
+  function bufNZ(name, n, Ctor) {
+    let b = POOL[name];
+    if (!b || b.length < n || b.constructor !== Ctor) b = POOL[name] = new Ctor(n);
+    return b;
+  }
   const DIRS4 = [[1, 0], [0, 1], [1, 1], [1, -1]];  // 向かい側ペアで見る方向（栓の判定用）
 
   /*
@@ -168,15 +174,16 @@
     const keep = o.keep == null ? 0.5 : o.keep;   // 囲みが部屋をこれだけ覆えていれば塗る
 
     // 壁＝線（しきい値済み）＋既存の塗り
-    const blocked = buf('blocked', n, Uint8Array);
-    for (let i = 0; i < n; i++) blocked[i] = B0[i] | (FB ? FB[i] : 0);
+    // 自動クロップの下調べ（seedBox）で同じ壁・同じ太らせ方をすでに計算済みなら、それを使い回す
+    const blocked = o.pre ? o.pre.blocked : bufNZ('blocked', n, Uint8Array);
+    if (!o.pre) for (let i = 0; i < n; i++) blocked[i] = B0[i] | (FB ? FB[i] : 0);
     // 壁を gap だけ太らせる → 幅 2*gap 以下の線の切れ目は閉じる
-    const Z = gap > 0 ? dilateP('Z', blocked, w, h, gap) : blocked;
+    const Z = (o.pre && o.pre.Z) ? o.pre.Z : (gap > 0 ? dilateP('Z', blocked, w, h, gap) : blocked);
     // 部屋＝壁の帯より外側
-    const roomM = buf('roomM', n, Uint8Array);
+    const roomM = bufNZ('roomM', n, Uint8Array);
     for (let i = 0; i < n; i++) roomM[i] = !blocked[i] && !Z[i] ? 1 : 0;
     const lab = buf('lab', n, Uint16Array);   // 部屋番号（16bit で十分＝領域数はそこまで増えない）
-    const q = buf('q', n, Int32Array);        // BFS のキュー（使い回し）
+    const q = bufNZ('q', n, Int32Array);       // BFS のキュー（使い回し・0クリア不要）
     let nl = 0, qt = 0;
 
     // 1) 部屋を番号付け
@@ -380,7 +387,112 @@
 
   // 線で囲まれた領域を塗る。戻り値は塗る画素の 0/1 マスク
   // ink があれば、線のアンチエイリアスの下まで塗りを差し込む（隙間なく塗る）
-  function fillRegion(o) {
+  // ---------- 自動クロップ（軽量化）----------
+  // 大きな画像のごく一部を塗るとき、全画素に対して重い計算をするのは無駄が多い。
+  // そこで「出発点から繋がっている自由な場所」を安い flood で 1 回だけ下調べして、
+  // その範囲＋マージンだけを切り抜いて本体の計算をする。結果は同じで、無駄が減る。
+  function subArr(a, w, bx, by, bw, bh) {
+    if (!a) return a;
+    const out = new a.constructor(bw * bh);
+    for (let y = 0; y < bh; y++) out.set(a.subarray((by + y) * w + bx, (by + y) * w + bx + bw), y * bw);
+    return out;
+  }
+  // シードから「壁でない画素」を辿って、到達範囲の bbox を返す（下調べ）。
+  // 壁の太らせ（隙間閉じ）はここではしない。太らせた壁より広い範囲を辿るので、
+  // 塗られる領域は必ずこの bbox の中に入る＝少し余裕を持った範囲になるだけ（結果は同じ）。
+  // 逆に、太らせを省くことで下調べ自体が安くなる（本体は切り抜いた範囲内で太らせる）。
+  // 辿った結果が画像の半分を超えたら「切る意味なし」として null（下調べの無駄を制限）
+  function seedBox(o, margin, out) {
+    const { w, h, B0, FB, seed } = o;
+    const n = w * h;
+    const blocked = bufNZ('blocked', n, Uint8Array);
+    for (let i = 0; i < n; i++) blocked[i] = B0[i] | (FB ? FB[i] : 0);
+    if (out) { out.blocked = blocked; out.Z = null; }
+    const vis = buf('sbox', n, Uint8Array);
+    const q = bufNZ('sq', n, Int32Array);
+    let qt = 0, x0 = w, y0 = h, x1 = -1, y1 = -1;
+    const free = i => !blocked[i];
+    const push = i => {
+      if (vis[i] || !free(i)) return;
+      vis[i] = 1; q[qt++] = i;
+      const x = i % w, y = (i - x) / w;
+      if (x < x0) x0 = x; if (x > x1) x1 = x;
+      if (y < y0) y0 = y; if (y > y1) y1 = y;
+    };
+    for (let i = 0; i < n; i++) {
+      if (!seed[i]) continue;
+      if (free(i)) push(i);
+      else {
+        // 出発点が線（帯）の上：線に触れている部屋も対象なので隣の内側から辿る
+        const x = i % w, y = (i - x) / w;
+        if (x > 0) push(i - 1);
+        if (x < w - 1) push(i + 1);
+        if (y > 0) push(i - w);
+        if (y < h - 1) push(i + w);
+      }
+    }
+    if (!qt) return null;
+    for (let qh = 0; qh < qt; qh++) {
+      const p = q[qh], x = p % w, y = (p - x) / w;
+      if (x > 0) push(p - 1);
+      if (x < w - 1) push(p + 1);
+      if (y > 0) push(p - w);
+      if (y < h - 1) push(p + w);
+      if (qt > n * 0.3) return null;   // 広がりすぎ＝全体計算した方が早い
+    }
+    const bx = Math.max(0, x0 - margin), by = Math.max(0, y0 - margin);
+    const bxe = Math.min(w - 1, x1 + margin), bye = Math.min(h - 1, y1 + margin);
+    return { bx, by, bw: bxe - bx + 1, bh: bye - by + 1 };
+  }
+  function autoCrop(o, run) {
+    const n = o.w * o.h;
+    const min = o.cropMin == null ? 250000 : o.cropMin;   // これより小さい画像では下調べの方が無駄
+    if (o.autoCrop === false || !o.seed || n <= min) return run(o);
+    // 安いかさ上げチェック：シード自体の bbox がすでに大きい（画像の半分超）なら下調べもしない
+    {
+      const w = o.w;
+      let x0 = w, y0 = o.h, x1 = -1, y1 = -1;
+      for (let i = 0; i < n; i++) {
+        if (!o.seed[i]) continue;
+        const x = i % w, y = (i - x) / w;
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+      if (x1 < 0) return run(o);
+    const sArea = (x1 - x0 + 1) * (y1 - y0 + 1);
+    // シードの範囲だけで画像の15%以上＝切っても少ししか軽くならないので下調べを省く
+    if (sArea >= n * 0.15) return run(o);
+    }
+    // マージン＝帯への広がり(gap+1)＋線の下への差し込み(bleed+2)＋余裕
+    const pre = {};
+    const box = seedBox(o, 2 * (o.gap | 0) + (o.bleed | 0) + 8, pre);
+    // 切れなかった場合も、下調べで作った壁／太らせ壁（全体サイズ）を本体に渡して二度手間を防ぐ
+    if (!box) return run({ ...o, pre });
+    if (box.bw * box.bh >= n * 0.5) return run({ ...o, pre });   // ほぼ全体なら切る意味が無い
+    const oc = {
+      ...o, autoCrop: false,
+      // 下調べで作った壁も同じ矩形に切って使い回す（本体の壁スキャン 1 回分が浮く）
+      pre: { blocked: subArr(pre.blocked, o.w, box.bx, box.by, box.bw, box.bh), Z: null },
+      w: box.bw, h: box.bh,
+      B0: subArr(o.B0, o.w, box.bx, box.by, box.bw, box.bh),
+      FB: subArr(o.FB, o.w, box.bx, box.by, box.bw, box.bh),
+      seed: subArr(o.seed, o.w, box.bx, box.by, box.bw, box.bh),
+      allow: subArr(o.allow, o.w, box.bx, box.by, box.bw, box.bh),
+      ink: subArr(o.ink, o.w, box.bx, box.by, box.bw, box.bh),
+    };
+    const rc = run(oc);
+    if (rc instanceof Uint8Array) {
+      const M = new Uint8Array(n);
+      for (let y = 0; y < box.bh; y++) M.set(rc.subarray(y * box.bw, (y + 1) * box.bw), (box.by + y) * o.w + box.bx);
+      return M;
+    }
+    const grp = new Int32Array(n);
+    for (let y = 0; y < box.bh; y++) grp.set(rc.grp.subarray(y * box.bw, (y + 1) * box.bw), (box.by + y) * o.w + box.bx);
+    return { grp, G: rc.G };
+  }
+
+  function fillRegion(o) { return autoCrop(o, fillRegionCore); }
+  function fillRegionCore(o) {
     const { w, h, B0, allow, ink, seed } = o;
     const n = w * h;
     // 出発点が無いなら計算しない（iPad での無駄打ち防止）
@@ -391,17 +503,17 @@
     if (ink && b > 0) {
       // 線の濃さがある画素へ、近い方の領域のラベルで差し込む。
       // 塗＝縁の下まで隙間なく（b+2）、消＝線の縁の下を掃除する「領域スケーリング」（b）
-      const enter = new Uint8Array(n);
+      const enter = bufNZ('enter', n, Uint8Array);
       const thr = o.inkThr == null ? 8 : o.inkThr | 0;
       for (let i = 0; i < n; i++) enter[i] = ink[i] >= thr && (!allow || allow[i] || B0[i]) ? 1 : 0;
-      const q = new Int32Array(n);
+      const q = bufNZ('q', n, Int32Array);
       let qt = 0;
       for (let i = 0; i < n; i++) if (lab[i]) q[qt++] = i;
       grow(lab, q, qt, o.erase ? Math.max(1, b) : Math.max(1, b + 2), enter, null, w, h);
     } else if (b > 0) {
-      const enter = new Uint8Array(n);
+      const enter = bufNZ('enter', n, Uint8Array);
       for (let i = 0; i < n; i++) enter[i] = B0[i] && !(o.FB && o.FB[i]) && (!allow || allow[i]) ? 1 : 0;
-      const q = new Int32Array(n);
+      const q = bufNZ('q', n, Int32Array);
       let qt = 0;
       for (let i = 0; i < n; i++) if (lab[i]) q[qt++] = i;
       grow(lab, q, qt, b, enter, null, w, h);
@@ -413,7 +525,8 @@
 
   // 線で区切られた領域ごとに番号を付ける（塗り分け）。
   // 戻り値 grp は 1..G のグループ番号（0 = 塗らない）。小さすぎる領域は塗らない
-  function splitRegion(o) {
+  function splitRegion(o) { return autoCrop(o, splitRegionCore); }
+  function splitRegionCore(o) {
     const { w, h } = o;
     const n = w * h;
     const minGroup = o.minGroup || 30;

@@ -10,11 +10,11 @@ const { composite, writePNG, scale } = require('./render.js');
 const W = 300, H = 300;
 const lineAlpha = makeScene(W, H);
 
-const ids = ['fill', 'line', 'ov', 'stack', 'wrap', 'fname', 'size', 'empty', 'st', 'hint', 'panel', 'togglePanel',
+const ids = ['fill', 'line', 'pen', 'ov', 'stack', 'wrap', 'fname', 'size', 'empty', 'st', 'hint', 'panel', 'togglePanel',
   'menu', 'file', 'undo', 'redo', 'zi', 'zo', 'zl', 'fit', 'showL', 'showF', 'chk', 'pan', 'bAll', 'clr', 'copyFill',
   'thr', 'conv', 'gap', 'bleed', 'protect', 'color', 'brush', 'pct'];
 const radioDef = {
-  action: ['fill', 'erase', 'split'], shape: ['brush', 'lasso'],
+  action: ['fill', 'erase', 'split'], shape: ['brush', 'lasso', 'pen'],
   trace: ['trace', 'raw'], range: ['clip', 'whole'], smode: ['parts', 'obj'],
 };
 const { els, document, state } = makeDom(ids, radioDef, { action: 'fill', shape: 'brush', trace: 'trace', range: 'clip', smode: 'parts' });
@@ -168,7 +168,63 @@ setTimeout(() => {
                     setTimeout(() => {
                       console.log('9 raw:', els.st.textContent, 'px =', countFilled());
                       dump('e2e_raw');
-                      console.log('ALL DONE');
+                      // 10) ペン（穴埋めの線）を描く → 11) undo で消える
+                      setRadio('action', 'fill'); setRadio('trace', 'trace'); setRadio('shape', 'pen');
+                      els.brush.value = '8';
+                      stroke([[20, 280], [80, 280]]);
+                      setTimeout(() => {
+                        const PB = els.pen._buf;
+                        let pc = 0; for (let i = 3; i < PB.length; i += 4) if (PB[i]) pc++;
+                        console.log('10 pen:', els.st.textContent, 'pen px =', pc);
+                        els.undo._ls.click();
+                        setTimeout(() => {
+                          let pc2 = 0; for (let i = 3; i < PB.length; i += 4) if (PB[i]) pc2++;
+                          console.log('11 pen undo: pen px =', pc2);
+                          // 12〜15) ペン線が「壁」になるかの確認（消しゴムで検証）
+                          //   背景を塗る → ペン線を1本描く → ペン線の手前まで消す → 向こう側は残る
+                          //   → ペン線を消す → 同じなぞりで向こう側も消える
+                          els.clr._ls.click();   // 全消去（bAllは「塗り分け」なので使わない）
+                          setTimeout(() => {
+                            const B = els.fill._buf;
+                            const A = (x, y) => B[(y * 300 + x) * 4 + 3];
+                            els.gap.value = '8';
+                            setRadio('shape', 'lasso'); setRadio('action', 'fill'); setRadio('range', 'whole');
+                            stroke([[10, 250], [70, 250], [70, 290], [10, 290], [10, 250]]);
+                            setTimeout(() => {
+                              console.log('12 paint background:', els.st.textContent, 'px =', countFilled(), 'A(85,270) =', A(85, 270), 'A(112,270) =', A(112, 270));
+                              // 13) x=100 に縦のペン線（背景の中、円には触れない）
+                              setRadio('shape', 'pen'); setRadio('action', 'fill'); setRadio('range', 'clip');
+                              els.brush.value = '8';
+                              stroke([[100, 245], [100, 295]]);
+                              setTimeout(() => {
+                                console.log('13 pen wall:', els.st.textContent);
+                                // 14) ペン線の手前まで消す → 向こう側(112,270)は残るはず
+                                setRadio('shape', 'brush'); setRadio('action', 'erase');
+                                els.brush.value = '12';
+                                stroke([[60, 270], [92, 270]]);
+                                setTimeout(() => {
+                                  console.log('14 erase stops at pen:', els.st.textContent, 'A(85,270) =', A(85, 270), 'A(112,270) =', A(112, 270));
+                                  dump('e2e_pen_wall');
+                                  // 15) ペン線を消して（動作=消す＋ペン）から、同じなぞり → 向こう側も消えるはず
+                                  setRadio('shape', 'pen');
+                                  els.brush.value = '12';
+                                  stroke([[100, 245], [100, 295]]);
+                                  setTimeout(() => {
+                                    console.log('15a pen erased:', els.st.textContent);
+                                    setRadio('shape', 'brush');
+                                    stroke([[60, 270], [110, 270]]);   // 今度は壁がないので先まで消える
+                                    setTimeout(() => {
+                                      console.log('15b erase without pen:', els.st.textContent, 'A(112,270) =', A(112, 270));
+                                      dump('e2e_pen_seal');
+                                      console.log('ALL DONE');
+                                    }, 150);
+                                  }, 150);
+                                }, 150);
+                              }, 150);
+                            }, 150);
+                          }, 60);
+                        }, 60);
+                      }, 150);
                     }, 150);
                   }, 150);
                 }, 60);
