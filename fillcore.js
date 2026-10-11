@@ -55,6 +55,32 @@
     return out;
   }
 
+  // dilate の結果受け取り版（out をプールして使い回す）
+  function dilateP(name, src, w, h, r) {
+    const out = buf(name, w * h, Uint8Array);
+    if (r <= 0) { out.set(src); return out; }
+    const tmp = buf('dtmp', w * h, Uint8Array);
+    const pre = buf('pre', Math.max(w, h) + 1, Int32Array);
+    for (let y = 0; y < h; y++) {
+      const b = y * w;
+      pre[0] = 0;
+      for (let x = 0; x < w; x++) pre[x + 1] = pre[x] + src[b + x];
+      for (let x = 0; x < w; x++) {
+        const a = Math.max(0, x - r), c = Math.min(w - 1, x + r);
+        tmp[b + x] = pre[c + 1] - pre[a] > 0 ? 1 : 0;
+      }
+    }
+    for (let x = 0; x < w; x++) {
+      pre[0] = 0;
+      for (let y = 0; y < h; y++) pre[y + 1] = pre[y] + tmp[y * w + x];
+      for (let y = 0; y < h; y++) {
+        const a = Math.max(0, y - r), c = Math.min(h - 1, y + r);
+        out[y * w + x] = pre[c + 1] - pre[a] > 0 ? 1 : 0;
+      }
+    }
+    return out;
+  }
+
   // 4 方向のつながりでラベルを塗る。キュー q の qt 以降を使い、新しい末尾を返す
   function flood4(lab, mask, q, qt, s, label, w, h) {
     const qs = qt;
@@ -113,32 +139,50 @@
    *   - 塗りは帯へ depth だけ広がる。そのとき「別の部屋のそば」へは、
    *     先に壁がある場合（＝線の下）だけ進み、隙間の通り道は抜けない
    */
+  // ---------- メモリ使い回し（iPad などの GC カクつき対策）----------
+  // 同じサイズの作業用バッファを呼び出し間で再利用する（中身は毎回使い切る前に 0 クリアする）
+  const POOL = {};
+  function buf(name, n, Ctor) {
+    let b = POOL[name];
+    if (!b || b.length < n || b.constructor !== Ctor) b = POOL[name] = new Ctor(n);
+    b.fill(0, 0, n);
+    return b;
+  }
+  const DIRS4 = [[1, 0], [0, 1], [1, 1], [1, -1]];  // 向かい側ペアで見る方向（栓の判定用）
+
+  /*
+   * 部屋のラベル付け。戻り値 { lab, nl }
+   *   lab : 画素ごとのラベル（0 = 塗らない、1..nl = 領域）
+   *
+   * やさしい仕組み説明：
+   *   1. 線を少し太らせて「壁」にする。線の小さい切れ目は壁としてふさぐ（隙間閉じ）
+   *   2. 壁の外側を「部屋」に分ける。なぞり／囲みが触れた部屋だけが塗られる
+   *   3. 部屋が無くなるほど細い領域（目など）は「壁の帯の孤立したかたまり」として拾う
+   *   4. 塗りは線の帯の下へ少し広がる。ただし隙間の通り道は「栓」だけ抜ける
+   *      （栓＝両側が壁にはさまれた所＝閉じた切れ目。それ以外の通り道は漏れなので止める）
+   */
   function labelRegions(o) {
     const { w, h, B0, FB, seed, allow } = o;
     const gap = o.gap | 0;
     const n = w * h;
     const keep = o.keep == null ? 0.5 : o.keep;   // 囲みが部屋をこれだけ覆えていれば塗る
 
-    // 壁（線・既存の塗りを gap だけ太らせる → 幅 2*gap 以下の切れ目を閉じる）
-    const blocked = new Uint8Array(n);
+    // 壁＝線（しきい値済み）＋既存の塗り
+    const blocked = buf('blocked', n, Uint8Array);
     for (let i = 0; i < n; i++) blocked[i] = B0[i] | (FB ? FB[i] : 0);
-    const Z = gap > 0 ? dilate(blocked, w, h, gap) : blocked;
-
-    const free = new Uint8Array(n);               // 壁の外
-    for (let i = 0; i < n; i++) free[i] = blocked[i] ? 0 : 1;
-    const roomM = new Uint8Array(n);              // 部屋（壁の帯の外側）
-    for (let i = 0; i < n; i++) roomM[i] = free[i] && !Z[i] ? 1 : 0;
-    const bandM = new Uint8Array(n);              // 壁の帯
-    for (let i = 0; i < n; i++) bandM[i] = free[i] && Z[i] ? 1 : 0;
-    // 部屋のそば（隙間の通り道になり得る所）
-    const nearRoom = gap > 0 ? dilate(roomM, w, h, gap) : roomM;
-
-    const lab = new Int32Array(n), q = new Int32Array(n);
+    // 壁を gap だけ太らせる → 幅 2*gap 以下の線の切れ目は閉じる
+    const Z = gap > 0 ? dilateP('Z', blocked, w, h, gap) : blocked;
+    // 部屋＝壁の帯より外側
+    const roomM = buf('roomM', n, Uint8Array);
+    for (let i = 0; i < n; i++) roomM[i] = !blocked[i] && !Z[i] ? 1 : 0;
+    const lab = buf('lab', n, Uint16Array);   // 部屋番号（16bit で十分＝領域数はそこまで増えない）
+    const q = buf('q', n, Int32Array);        // BFS のキュー（使い回し）
     let nl = 0, qt = 0;
 
     // 1) 部屋を番号付け
     for (let i = 0; i < n; i++) {
       if (!roomM[i] || lab[i]) continue;
+      if (nl >= 65535) break;                 // 16bit の上限保険
       qt = flood4(lab, roomM, q, qt, i, ++nl, w, h);
     }
     const size = new Float64Array(nl + 1), inA = new Float64Array(nl + 1), sd = new Uint8Array(nl + 1);
@@ -153,7 +197,7 @@
       if (!seed[i]) continue;
       const L = lab[i];
       if (L) { sd[L] = 1; continue; }
-      if (!free[i]) continue;
+      if (blocked[i]) continue;
       const x = i % w, y = (i - x) / w;
       if (x > 0 && lab[i - 1]) sd[lab[i - 1]] = 1;
       if (x < w - 1 && lab[i + 1]) sd[lab[i + 1]] = 1;
@@ -161,36 +205,9 @@
       if (y < h - 1 && lab[i + w]) sd[lab[i + w]] = 1;
     }
 
-    // 2) 細い領域の救済：部屋のそばではない帯を繋がりで番号付け
-    const zone = new Uint8Array(n);
-    for (let i = 0; i < n; i++) zone[i] = bandM[i] && !nearRoom[i] ? 1 : 0;
-    const zlab = new Int32Array(n);
-    let zn = 0;
-    const zsize = [0], zinA = [0], zsd = [0];
-    for (let i = 0; i < n; i++) {
-      if (!zone[i] || zlab[i]) continue;
-      const L = ++zn;
-      zsize.push(0); zinA.push(0); zsd.push(0);
-      let cnt = 0, ina = 0, sdd = 0;
-      zlab[i] = L;
-      q[0] = i;
-      for (let qh = 0, qt2 = 1; qh < qt2; qh++) {
-        const p = q[qh], x = p % w, y = (p - x) / w;
-        cnt++;
-        if (!allow || allow[p]) ina++;
-        if (seed[p]) sdd = 1;
-        let j;
-        if (x > 0) { j = p - 1; if (zone[j] && !zlab[j]) { zlab[j] = L; q[qt2++] = j; } }
-        if (x < w - 1) { j = p + 1; if (zone[j] && !zlab[j]) { zlab[j] = L; q[qt2++] = j; } }
-        if (y > 0) { j = p - w; if (zone[j] && !zlab[j]) { zlab[j] = L; q[qt2++] = j; } }
-        if (y < h - 1) { j = p + w; if (zone[j] && !zlab[j]) { zlab[j] = L; q[qt2++] = j; } }
-      }
-      zsize[L] = cnt; zinA[L] = ina; zsd[L] = sdd;
-    }
-
-    // 部屋の影響ラベル（gap で打ち止め）。別の部屋のそばでは広がらない
-    const infl = new Int32Array(n);
-    if (gap > 0) {
+    // 部屋の影響ラベル（gap で打ち止め）。自由画素で非0＝「どれかの部屋のそば」＝隙間の通り道になり得る
+    const infl = buf('infl', n, Uint16Array);
+    {
       let iqt = 0;
       for (let i = 0; i < n; i++) if (roomM[i]) { infl[i] = lab[i]; q[iqt++] = i; }
       for (let dd = 0, qh = 0; dd < gap && qh < iqt; dd++) {
@@ -204,18 +221,45 @@
               const nx = x + dx;
               if ((dx | dy) === 0 || nx < 0 || nx >= w) continue;
               const j = ny * w + nx;
-              if (free[j] && !infl[j]) { infl[j] = infl[p]; q[iqt++] = j; }
+              if (!blocked[j] && !infl[j]) { infl[j] = infl[p]; q[iqt++] = j; }
             }
           }
         }
       }
     }
 
+    // 2) 細い領域の救済：「どの部屋のそばでもない帯」を繋がりで番号付け（判定はその場で行い配列は持たない）
+    const isZone = i => !blocked[i] && Z[i] && !infl[i];
+    const zlab = buf('zlab', n, Uint16Array);
+    let zn = 0;
+    const zsize = [0], zinA = [0], zsd = [0];
+    for (let i = 0; i < n; i++) {
+      if (!isZone(i) || zlab[i]) continue;
+      if (nl + zn >= 65535) break;   // ラベルは16bitなので部屋＋細い領域の合計で上限
+      const L = ++zn;
+      zsize.push(0); zinA.push(0); zsd.push(0);
+      let cnt = 0, ina = 0, sdd = 0;
+      zlab[i] = L;
+      q[0] = i;
+      for (let qh = 0, qt2 = 1; qh < qt2; qh++) {
+        const p = q[qh], x = p % w, y = (p - x) / w;
+        cnt++;
+        if (!allow || allow[p]) ina++;
+        if (seed[p]) sdd = 1;
+        let j;
+        if (x > 0) { j = p - 1; if (isZone(j) && !zlab[j]) { zlab[j] = L; q[qt2++] = j; } }
+        if (x < w - 1) { j = p + 1; if (isZone(j) && !zlab[j]) { zlab[j] = L; q[qt2++] = j; } }
+        if (y > 0) { j = p - w; if (isZone(j) && !zlab[j]) { zlab[j] = L; q[qt2++] = j; } }
+        if (y < h - 1) { j = p + w; if (isZone(j) && !zlab[j]) { zlab[j] = L; q[qt2++] = j; } }
+      }
+      zsize[L] = cnt; zinA[L] = ina; zsd[L] = sdd;
+    }
+
     // 出発点補強：出発点が帯（壁ぎわ）の上にあるとき、その帯が属する部屋も出発済みとする。
     // 消すときは無効（中心線が線ぎわに触れるたび反対側の領域まで消えてしまうため）
     if (gap > 0 && o.bandSeed !== false) {
       for (let i = 0; i < n; i++) {
-        if (!seed[i] || lab[i] || !free[i]) continue;
+        if (!seed[i] || lab[i] || blocked[i]) continue;
         const x = i % w, y = (i - x) / w;
         if (x > 0) { const v = lab[i - 1] || infl[i - 1]; if (v) sd[v] = 1; }
         if (x < w - 1) { const v = lab[i + 1] || infl[i + 1]; if (v) sd[v] = 1; }
@@ -235,19 +279,8 @@
       if (zsd[l]) ok[nl + l] = 1;
     }
 
-    // 4) 採用した部屋＋細い領域から、壁の帯へ depth だけ広げる。
-    //    「別の部屋のそば」へは、その先に壁がある（＝線の下へ進む）ときだけ入る
-    const outLab = new Int32Array(n);
-    const oq = new Int32Array(n);
-    let oqt = 0;
-    for (let i = 0; i < n; i++) {
-      const L = lab[i];
-      if (L && ok[L]) { outLab[i] = L; oq[oqt++] = i; continue; }
-      const ZL = zlab[i];
-      if (ZL && ok[nl + ZL]) { outLab[i] = nl + ZL; oq[oqt++] = i; }
-    }
-    // 壁までの距離（gap で打ち止め）
-    const dB = new Int32Array(n);
+    // 壁までの距離（1..gap+1 で打ち止め、0 = 遠い）。下位5bit＝距離、上位2bit＝栓メモ
+    const dB = buf('dB', n, Uint8Array);
     {
       let bqt = 0;
       for (let i = 0; i < n; i++) if (blocked[i]) { dB[i] = 1; q[bqt++] = i; }
@@ -268,33 +301,42 @@
         }
       }
     }
-    // 栓（両側が壁にはさまれた所）＝線の切れ目を閉じた所。ここは通り抜けられる
-    const squeeze = new Uint8Array(n);
-    if (gap > 0) {
-      const DIRS = [[1, 0], [0, 1], [1, 1], [1, -1]];
-      for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-          const i = y * w + x;
-          if (!free[i] || !nearRoom[i]) continue;
-          let hit = 0;
-          for (const [dx, dy] of DIRS) {
-            let a = 0, b = 0;
-            for (let t = 1; t <= gap; t++) {
-              const nx = x + dx * t, ny = y + dy * t;
-              if (nx < 0 || ny < 0 || nx >= w || ny >= h) { a = 1; break; }
-              if (blocked[ny * w + nx]) { a = 1; break; }
-            }
-            for (let t = 1; t <= gap; t++) {
-              const nx = x - dx * t, ny = y - dy * t;
-              if (nx < 0 || ny < 0 || nx >= w || ny >= h) { b = 1; break; }
-              if (blocked[ny * w + nx]) { b = 1; break; }
-            }
-            if (a && b) { hit = 1; break; }
-          }
-          squeeze[i] = hit;
-        }
-      }
+
+    // 4) 採用した部屋＋細い領域から、壁の帯へ depth だけ広がる
+    const outLab = buf('outLab', n, Uint16Array);
+    const oq = q;   // キューは使い回し（この時点で他の BFS は終わっている）
+    let oqt = 0;
+    for (let i = 0; i < n; i++) {
+      const L = lab[i];
+      if (L && ok[L]) { outLab[i] = L; oq[oqt++] = i; continue; }
+      const ZL = zlab[i];
+      if (ZL && ok[nl + ZL]) { outLab[i] = nl + ZL; oq[oqt++] = i; }
     }
+    // 栓（両側が壁にはさまれた所＝閉じた切れ目）かを「その場」で判定する。
+    // あらかじめ全画素で計算すると重いので、必要になった画素だけ調べて結果をメモする
+    // 栓メモは dB の上位2bit（0=未判定 0x40=栓 0x80=ちがう）
+    const isPlug = p => {
+      const m = dB[p] & 0xC0;
+      if (m) return m === 0x40;
+      const x = p % w, y = (p - x) / w;
+      let hit = 0;
+      for (const [dx, dy] of DIRS4) {
+        let a = 0, b = 0;
+        for (let t = 1; t <= gap; t++) {
+          const nx = x + dx * t, ny = y + dy * t;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) { a = 1; break; }
+          if (blocked[ny * w + nx]) { a = 1; break; }
+        }
+        for (let t = 1; t <= gap; t++) {
+          const nx = x - dx * t, ny = y - dy * t;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) { b = 1; break; }
+          if (blocked[ny * w + nx]) { b = 1; break; }
+        }
+        if (a && b) { hit = 1; break; }
+      }
+      dB[p] |= hit ? 0x40 : 0x80;
+      return hit;
+    };
 
     const depth = o.depth | 0;
     for (let d = 0, qh = 0; d < depth && qh < oqt; d++) {
@@ -302,7 +344,7 @@
       for (; qh < end3; qh++) {
         const p = oq[qh], x = p % w, y = (p - x) / w, S = outLab[p];
         // 別の部屋のそば（隙間の通り道）からは広がらない。栓（閉じた切れ目）は抜ける
-        const stopHere = nearRoom[p] && infl[p] !== S && !squeeze[p];
+        const stopHere = infl[p] && infl[p] !== S && !isPlug(p);
         for (let dy = -1; dy <= 1; dy++) {
           const ny = y + dy;
           if (ny < 0 || ny >= h) continue;
@@ -310,11 +352,11 @@
             const nx = x + dx;
             if ((dx | dy) === 0 || nx < 0 || nx >= w) continue;
             const j = ny * w + nx;
-            if (outLab[j] || !free[j]) continue;
-            if (dx && dy && (!free[p + dx] || !free[p + dy * w])) continue;  // 角抜け防止
+            if (outLab[j] || blocked[j]) continue;
+            if (dx && dy && (blocked[p + dx] || blocked[p + dy * w])) continue;  // 角抜け防止（斜めは壁づたいに）
             if (stopHere) continue;
             // 部屋のそばへは、壁の下へ進むときだけ入る（隙間を抜けて外へ出ない）
-            if (nearRoom[j] && !(dB[j] && dB[j] <= gap + 1)) continue;
+            if (infl[j] && !((dB[j] & 31) && (dB[j] & 31) <= gap + 1)) continue;
             outLab[j] = S;
             oq[oqt++] = j;
           }
@@ -322,10 +364,10 @@
       }
     }
 
-    // 5) 囲みで切り戻す（clipPad ≥ 0 のとき。消す＝エッジに沿って消す用）。
+    // 5) 囲みで切り戻す（clipPad >= 0 のとき。消す＝エッジに沿って消す用）。
     //    clipPad < 0 なら切らない：囲みは「どの領域を塗るか」の判定にだけ使う
     if (allow && (o.clipPad | 0) >= 0) {
-      const clip = o.clipPad > 0 ? dilate(allow, w, h, o.clipPad) : allow;
+      const clip = o.clipPad > 0 ? dilateP('clip', allow, w, h, o.clipPad) : allow;
       for (let i = 0; i < n; i++) if (outLab[i] && !clip[i]) outLab[i] = 0;
     }
     // ラベル番号を詰め直す
@@ -339,8 +381,10 @@
   // 線で囲まれた領域を塗る。戻り値は塗る画素の 0/1 マスク
   // ink があれば、線のアンチエイリアスの下まで塗りを差し込む（隙間なく塗る）
   function fillRegion(o) {
-    const { w, h, B0, allow, ink } = o;
+    const { w, h, B0, allow, ink, seed } = o;
     const n = w * h;
+    // 出発点が無いなら計算しない（iPad での無駄打ち防止）
+    if (seed) { let any = 0; for (let i = 0; i < n; i++) if (seed[i]) { any = 1; break; } if (!any) return new Uint8Array(n); }
     const b = o.bleed | 0;
     const { lab } = labelRegions({ ...o, depth: (o.gap | 0) + 1 });
 

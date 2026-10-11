@@ -84,6 +84,7 @@ function setRadio(name, value) {
 function fillRGBA() { return els.fill._buf; }
 function countFilled() { let c = 0; const B = fillRGBA(); for (let i = 3; i < B.length; i += 4) if (B[i]) c++; return c; }
 function dump(name, z) {
+  fs.mkdirSync('tools/out', { recursive: true });
   const c = composite(W, H, lineAlpha, fillRGBA());
   const s = scale(W, H, c, z || 2);
   writePNG(`tools/out/${name}.png`, s.w, s.h, s.rgba);

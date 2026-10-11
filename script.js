@@ -2,6 +2,24 @@
  *
  * 操作の流れ
  *   ブラシ/投げ縄でなぞる・囲む → 指を離した時に計算 → 塗り/消し/塗り分けを反映（元に戻せる）
+ *
+ * はじめて読む人へ：このファイルの構成（上から順）
+ *   1) 用意        … キャンバス取得、設定の保存・復元
+ *   2) 画像を開く  … 線画レイヤーと「線の濃さ」を作る（消さない基準になる）
+ *   3) 画面        … 拡大・縮小・移動、オーバーレイ（なぞり中の緑の線）
+ *   4) ポインター  … 指・ペン・マウスを「なぞり（点の列）」に変換。タップジェスチャもここ
+ *   5) ジョブ      … 指を離した瞬間の処理本体（塗る/消す/塗り分け → fillcore.js へ依頼）
+ *   6) 履歴        … 元に戻す/やり直し/全消去
+ *   7) UI 結びつけ … ボタン・スライダー・ショートカット
+ *
+ * 3 枚のキャンバス（#fill / #line / #ov）
+ *   fill … 塗りのレイヤー。保存されるのはこれ（消しゴムが消すのもこれだけ）
+ *   line … 線画レイヤー。参照専用なので消しても残る（クリスタの参照レイヤーと同じ役目）
+ *   ov   … 操作プレビュー用。なぞり中・囲み中の線だけを描く（計算結果は入らない）
+ *
+ * 重い計算について
+ *   塗り/消しの本体は fillcore.js にあり、worker.js（別スレッド）で動かして画面を固めない。
+ *   Worker が使えない環境では自動でこのスレッドで計算する。
  */
 (function () {
   'use strict';
@@ -270,6 +288,7 @@
 
   // ---------- 反映 ----------
   // マスク M（矩形 bx,by,bw,bh）を塗る、または消す
+  // 計算結果のマスク M を塗りレイヤーに反映する（erase なら消す）。変更前は履歴へ
   function applyMask(bx, by, bw, bh, M, erase) {
     let cnt = 0;
     for (let i = 0; i < M.length; i++) cnt += M[i];
@@ -312,23 +331,72 @@
   //   allow : 囲み（1 = 囲みの中）。null なら画像全体（「領域全体」）
   // 塗る：囲みが領域を半分以上覆えていれば、領域を線の縁まで隙間なく塗る
   // 消す：囲みの中で線に突き当たるまで消す（エッジに沿って消去）
-  function traceRegion(bx, by, bw, bh, S, allow, act, withInk) {
+  // ---------- 裏側で計算（Worker）----------
+  // 塗り／消し／塗り分けの計算は画像全体を見るので重いことがあります。
+  // Worker（別スレッド）で計算して、そのあいだも画面が固まらないようにします。
+  // Worker が使えない環境（file:// など）では自動で同じスレッドの計算に落ちます。
+  let worker = null, workerBad = false, wid = 0;
+  const wpend = new Map();
+  function initWorker() {
+    if (worker || workerBad) return;
+    try {
+      worker = new Worker('worker.js');
+      worker.onmessage = e => {
+        const d = e.data, p = wpend.get(d.id);
+        if (!p) return;
+        wpend.delete(d.id);
+        if (d.err) p.rej(new Error(d.err)); else p.res(d.M ? { M: d.M } : { grp: d.grp, G: d.G });
+      };
+      worker.onerror = () => {
+        workerBad = true; worker = null;
+        for (const p of wpend.values()) p.rej(new Error('worker を使えませんでした'));
+        wpend.clear();
+      };
+    } catch (_) { workerBad = true; worker = null; }
+  }
+  initWorker();
+  // 計算を Worker に投げる（配列はコピーせず渡す）。失敗したら自スレッドで計算
+  function calc(o, transfer) {
+    if (!worker) return Promise.resolve(null);
+    const id = ++wid;
+    return new Promise((res, rej) => {
+      wpend.set(id, { res, rej });
+      o.id = id;
+      try { worker.postMessage(o, transfer || []); }
+      catch (err) { wpend.delete(id); rej(err); }
+    });
+  }
+  async function calcFill(o) {
+    const tr = [];
+    for (const k of ['B0', 'FB', 'seed', 'allow', 'ink']) if (o[k] && o[k].buffer) tr.push(o[k].buffer);
+    const r = await calc(o, tr);
+    return r ? r.M : FC.fillRegion(o);
+  }
+  async function calcSplit(o) {
+    const tr = [];
+    for (const k of ['B0', 'FB', 'seed', 'allow']) if (o[k] && o[k].buffer) tr.push(o[k].buffer);
+    const r = await calc(o, tr);
+    return r || FC.splitRegion(o);
+  }
+
+  // なぞり／囲みから「塗る・消す・塗り分け」の計算をする本体（重いので Worker へ渡す）
+  async function traceRegion(bx, by, bw, bh, S, allow, act, withInk) {
     const erase = act === 'erase';
     const B0 = crop(erase ? getBarrierAt(EDGE) : getBarrier(), bx, by, bw, bh);
     const FB = protectOn() && act === 'fill' ? fillMaskOf(bx, by, bw, bh) : null;  // 消す・塗り分けは既存塗りを壁にしない
     const gap = num('gap'), bleed = num('bleed');
     if (act === 'split') {
-      const { grp, G } = FC.splitRegion({
-        w: bw, h: bh, B0, FB, seed: S, allow, gap,
+      const { grp, G } = await calcSplit({
+        act, w: bw, h: bh, B0, FB, seed: S, allow, gap,
         keep: 0, clipPad: -1,  // 塗り分け：触れた領域は全体を塗る（囲みは判定のみ）
         objMode: radio('smode') === 'obj', pct: num('pct'),
       });
       return paintGroups(bx, by, bw, bh, grp, G);
     }
-    const M = FC.fillRegion({
+    const M = await calcFill({
       w: bw, h: bh, B0, FB, seed: S, allow, gap,
       bandSeed: !erase,  // 消す：中心線が触れた領域だけ消す（線を越えない）
-      bleed, erase,
+      act, bleed, erase,
       ink: !withInk ? null : crop(lineAlpha, bx, by, bw, bh),  // 線の濃さ：塗＝縁の下まで隙間なく、消＝線の縁の下を掃除
       inkThr: clamp(Math.round(num('thr') / 6), 2, 40),
       keep: erase ? 0 : 0.5,
@@ -400,6 +468,7 @@
   }
 
   // 投げ縄の計算
+  // 投げ縄版の処理：囲みの中（または触れた領域）を塗る/消す/塗り分ける
   function jobLasso(P) {
     const act = action, erase = act === 'erase', tr = useTrace();
     const whole = wholeRange() && act !== 'split' && tr;
@@ -425,6 +494,7 @@
     x.stroke();
     return c;
   }
+  // ブラシ版の処理：なぞった跡＝囲みとして、触れた領域を塗る/消す/塗り分ける
   function jobBrush(P, size) {
     const act = action, erase = act === 'erase', tr = useTrace();
     const gap = num('gap'), bleed = num('bleed');
@@ -473,19 +543,22 @@
     busy = true;
     status(label);
     setTimeout(() => {
-      try {
-        const msg = fn();
-        status(msg || '完了');
-      } catch (err) {
-        console.error(err);
-        status('処理に失敗しました：' + ((err && err.message) || err));
-      } finally {
-        busy = false;
-        drawOverlay();
-        updateHistoryButtons();
-      }
+      // fn は Promise を返してよい（Worker 計算待ちがあるため）
+      Promise.resolve()
+        .then(fn)
+        .then(msg => { status(msg || '完了'); })
+        .catch(err => {
+          console.error(err);
+          status('処理に失敗しました：' + ((err && err.message) || err));
+        })
+        .then(() => {
+          busy = false;
+          drawOverlay();
+          updateHistoryButtons();
+        });
     }, 30);
   }
+  // 指/ペンを離した瞬間：なぞりを確定して計算ジョブを実行する
   function finishStroke(s) {
     const P = s.pts.slice();
     if (s.kind === 'brush') {
